@@ -42,38 +42,49 @@ struct Curl_ssl {
   unsigned int supports; /* bitfield, see above */
   size_t sizeof_ssl_backend_data;
 
+  /* Optional. Return 1 for success or 0 for error. */
   int (*init)(void);
+  /* Optional. */
   void (*cleanup)(void);
 
   size_t (*version)(char *buffer, size_t size);
+  /* Optional */
   int (*check_cxn)(struct connectdata *cxn);
   int (*shut_down)(struct connectdata *conn, int sockindex);
+  /* TODO: Rename connindex to sockindex here and in all the implementations? */
   bool (*data_pending)(const struct connectdata *conn,
                        int connindex);
 
   /* return 0 if a find random is filled in */
   CURLcode (*random)(struct Curl_easy *data, unsigned char *entropy,
                      size_t length);
+  /* Optional */
   bool (*cert_status_request)(void);
 
   CURLcode (*connect_blocking)(struct connectdata *conn, int sockindex);
+  /* This is used like the `connecting` field of Curl_handler in urldata.h */
   CURLcode (*connect_nonblocking)(struct connectdata *conn, int sockindex,
                                   bool *done);
   void *(*get_internals)(struct ssl_connect_data *connssl, CURLINFO info);
   void (*close_one)(struct connectdata *conn, int sockindex);
+  /* Optional */
   void (*close_all)(struct Curl_easy *data);
   void (*session_free)(void *ptr);
 
+  /* Optional */
   CURLcode (*set_engine)(struct Curl_easy *data, const char *engine);
+  /* Optional */
   CURLcode (*set_engine_default)(struct Curl_easy *data);
   struct curl_slist *(*engines_list)(struct Curl_easy *data);
 
+  /* Optional */
   bool (*false_start)(void);
 
+  /* Optional */
   CURLcode (*md5sum)(unsigned char *input, size_t inputlen,
                      unsigned char *md5sum, size_t md5sumlen);
   CURLcode (*sha256sum)(const unsigned char *input, size_t inputlen,
-                    unsigned char *sha256sum, size_t sha256sumlen);
+                        unsigned char *sha256sum, size_t sha256sumlen);
 };
 
 #ifdef USE_SSL
@@ -108,6 +119,7 @@ CURLcode Curl_none_md5sum(unsigned char *input, size_t inputlen,
 #include "mbedtls.h"        /* mbedTLS versions */
 #include "mesalink.h"       /* MesaLink versions */
 #include "bearssl.h"        /* BearSSL versions */
+#include "rustls.h"         /* rustls versions */
 
 #ifndef MAX_PINNED_PUBKEY_SIZE
 #define MAX_PINNED_PUBKEY_SIZE 1048576 /* 1MB */
