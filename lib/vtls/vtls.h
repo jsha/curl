@@ -51,7 +51,7 @@ struct Curl_ssl {
   /* Optional */
   int (*check_cxn)(struct connectdata *cxn);
   int (*shut_down)(struct connectdata *conn, int sockindex);
-  /* TODO: Rename connindex to sockindex here and in all the implementations? */
+  /* TODO: Rename connindex to sockindex here and in all implementations? */
   bool (*data_pending)(const struct connectdata *conn,
                        int connindex);
 
@@ -61,8 +61,12 @@ struct Curl_ssl {
   /* Optional */
   bool (*cert_status_request)(void);
 
+  /* Optional. Only used by FTP. */
   CURLcode (*connect_blocking)(struct connectdata *conn, int sockindex);
-  /* This is used like the `connecting` field of Curl_handler in urldata.h */
+  /* This is used like the `connecting` field of Curl_handler in urldata.h.
+     Once the handshake is done, this function should (a) set appropriate
+     handlers in conn->recv[sockindex] and conn->send[sockindex], and (b)
+     set *done to TRUE. */
   CURLcode (*connect_nonblocking)(struct connectdata *conn, int sockindex,
                                   bool *done);
   void *(*get_internals)(struct ssl_connect_data *connssl, CURLINFO info);

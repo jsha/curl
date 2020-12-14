@@ -184,8 +184,19 @@ enum protection_level {
 };
 #endif
 
-/* enum for the nonblocking SSL connection state machine */
+/* enum for the nonblocking SSL connection state machine.
+ * This enum is driven forward by calling the connect_nonblocking
+ * function from the current SSL backend's Curl_ssl struct (vtls/vtls.h).
+ * Note that these states are an internal implementation detail for SSL
+ * backends, and any given backend can use them to mean anything it likes,
+ * or not use them at all. The interfaces curl cares about are (a) the backend
+ * should set the `*done` field in connect_nonblocking when it's done
+ * handshaking, and (b) the backend should set conn->ssl[sockindex]->state to
+ * ssl_connection_complete when it's done handshaking.
+ */
 typedef enum {
+  /* Do backend-internal setup for this connection. No I/O. Valid transitions:
+     ssl_connect_1 (on error); ssl_connect_2. */
   ssl_connect_1,
   ssl_connect_2,
   ssl_connect_2_reading,
@@ -194,6 +205,8 @@ typedef enum {
   ssl_connect_done
 } ssl_connect_state;
 
+/* Higher-level state of the SSL connection. Like ssl_connect_state, this is
+   used entirely internal to the SSL backend. */
 typedef enum {
   ssl_connection_none,
   ssl_connection_negotiating,
@@ -681,6 +694,8 @@ struct SingleRequest {
 
 /*
  * Specific protocol handler.
+ *
+ * See docs/INTERNALS.md for details on how this struct is used.
  */
 
 struct Curl_handler {
