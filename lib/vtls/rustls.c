@@ -57,6 +57,8 @@ Curl_rustls_data_pending(const struct connectdata *conn, int sockindex)
 {
   const struct ssl_connect_data *connssl = &conn->ssl[sockindex];
   struct ssl_backend_data *backend = connssl->backend;
+  fprintf(stderr, "rustls_data_pending %d\n",
+    rustls_client_session_wants_read(backend->session));
   return rustls_client_session_wants_read(backend->session);
 }
 
@@ -68,19 +70,68 @@ Curl_rustls_connect(struct connectdata *conn, int sockindex)
 }
 
 static ssize_t
-rustls_recv(struct connectdata *conn, int sockindex, char *buf, size_t len,
-            CURLcode *err)
+rustls_recv(struct connectdata *conn, int sockindex, char *plainbuf,
+            size_t plainlen, CURLcode *err)
 {
-  fprintf(stderr, "rustls_recv: unimplemented\n");
-  return -1;
-}
+  struct ssl_connect_data *const connssl = &conn->ssl[sockindex];
+  struct ssl_backend_data *const backend = connssl->backend;
+  struct rustls_client_session *const session = backend->session;
+  curl_socket_t sockfd = conn->sock[sockindex];
+  uint8_t tlsbuf[4096];
+  int n = 0;
+  int rustls_result = 0;
 
-static ssize_t
-rustls_send(struct connectdata *conn, int sockindex, const void *buf,
-            size_t len, CURLcode *err)
-{
-  fprintf(stderr, "rustls_send: unimplemented\n");
-  return -1;
+  fprintf(stderr, "rustls_recv\n");
+
+  bzero(tlsbuf, sizeof(tlsbuf));
+  n = read(sockfd, tlsbuf, sizeof(tlsbuf));
+  if(n == 0) {
+    fprintf(stderr, "rustls_recv: EOF reading from socket\n");
+    return CURLE_READ_ERROR;
+  }
+  else if(n < 0) {
+    if(SOCKERRNO == EAGAIN || SOCKERRNO == EWOULDBLOCK) {
+      fprintf(stderr, "rustls_recv: again!\n");
+      return CURLE_OK;
+    }
+    perror("reading from socket");
+    return CURLE_READ_ERROR;
+  }
+  fprintf(stderr, "rustls_recv: read %d bytes from socket\n", n);
+
+  /*
+   * Now pull those bytes from the buffer into ClientSession.
+   * Note that we pass tlsbuf, n; not tlsbuf, sizeof(tlsbuf). We don't
+   * want to pull in unitialized memory that we didn't just
+   * read from the socket.
+   */
+  n = rustls_client_session_read_tls(session, (uint8_t *)tlsbuf, n);
+  if(n == 0) {
+    fprintf(stderr, "rustls_recv: EOF from ClientSession::read_tls\n");
+    return CURLE_READ_ERROR;
+  }
+  else if(n < 0) {
+    fprintf(stderr, "rustls_recv: rror in ClientSession::read_tls\n");
+    return CURLE_READ_ERROR;
+  }
+
+  rustls_result = rustls_client_session_process_new_packets(session);
+  if(rustls_result != CRUSTLS_OK) {
+    fprintf(stderr, "Error in process_new_packets");
+    return CURLE_COULDNT_CONNECT;
+  }
+
+  n = rustls_client_session_read(session, plainbuf, plainlen);
+  if(n == 0) {
+    fprintf(stderr, "rustls_recv: EOF from ClientSession::read\n");
+    return CURLE_READ_ERROR;
+  }
+  else if(n < 0) {
+    fprintf(stderr, "rustls_recv: error in ClientSession::read\n");
+    return CURLE_READ_ERROR;
+  }
+
+  return n;
 }
 
 /*
@@ -91,11 +142,12 @@ rustls_send(struct connectdata *conn, int sockindex, const void *buf,
 int
 write_all(int fd, const char *buf, int n)
 {
+  fprintf(stderr, "writing %d\n", n);
   int m = 0;
   while(n > 0) {
     m = write(fd, buf, n);
     if(m < 0) {
-      perror("writing to stdout");
+      perror("writing to socket");
       return 1;
     }
     if(m == 0) {
@@ -107,6 +159,55 @@ write_all(int fd, const char *buf, int n)
   return 0;
 }
 
+static ssize_t
+rustls_send(struct connectdata *conn, int sockindex, const void *plainbuf,
+            size_t plainlen, CURLcode *err)
+{
+  struct ssl_connect_data *const connssl = &conn->ssl[sockindex];
+  struct ssl_backend_data *const backend = connssl->backend;
+  struct rustls_client_session *const session = backend->session;
+  curl_socket_t sockfd = conn->sock[sockindex];
+  int n = 0;
+  int result = 0;
+  uint8_t tlsbuf[2048];
+
+  fprintf(stderr, "rustls_send of %d bytes\n", plainlen);
+
+  n = rustls_client_session_write(session, plainbuf, plainlen);
+  if(n == 0) {
+    fprintf(stderr, "rustls_send: EOF in write\n");
+    *err = CURLE_WRITE_ERROR;
+    return;
+  }
+  else if(n < 0) {
+    fprintf(stderr, "rustls_send: error in write\n");
+    *err = CURLE_WRITE_ERROR;
+    return;
+  }
+
+  n = rustls_client_session_write_tls(session, tlsbuf, sizeof(tlsbuf));
+  if(n == 0) {
+    fprintf(stderr, "rustls_send: EOF in write_tls\n");
+    *err = CURLE_WRITE_ERROR;
+    return;
+  }
+  else if(n < 0) {
+    fprintf(stderr, "rustls_send: error in write_tls\n");
+    *err = CURLE_WRITE_ERROR;
+    return;
+  }
+
+
+  result = write_all(sockfd, tlsbuf, n);
+  if(result != 0) {
+    fprintf(stderr, "rustls_send: error in write_all\n");
+    *err = CURLE_WRITE_ERROR;
+  }
+
+  fprintf(stderr, "rustls_send done: %d\n", n);
+  return n;
+}
+
 static CURLcode
 Curl_rustls_connect_nonblocking(struct connectdata *conn, int sockindex,
                                 bool *done)
@@ -114,12 +215,18 @@ Curl_rustls_connect_nonblocking(struct connectdata *conn, int sockindex,
   int n = 0;
   int what = 0;
   int rustls_result = 0;
-  uint8_t buf[2048];
+  uint8_t buf[6000]; /* TODO: Make this smaller */
   struct ssl_connect_data *const connssl = &conn->ssl[sockindex];
   struct ssl_backend_data *const backend = connssl->backend;
-  struct rustls_client_session *const session = backend->session;
+  struct rustls_client_session *session = backend->session;
   curl_socket_t sockfd = conn->sock[sockindex];
   struct Curl_easy *data = conn->data;
+
+  if(ssl_connection_none == connssl->state) {
+    rustls_client_session_new(client_config, conn->host.name, &session);
+    backend->session = session;
+    connssl->state = ssl_connection_negotiating;
+  }
 
   /* Connection has already been established, and state machine has
    been updated. */
@@ -127,6 +234,26 @@ Curl_rustls_connect_nonblocking(struct connectdata *conn, int sockindex,
     *done = TRUE;
     DEBUGASSERT(!rustls_client_session_is_handshaking(session));
     return CURLE_OK;
+  }
+
+  if(rustls_client_session_wants_write(session)) {
+    fprintf(stderr, "ClientSession wants us to write_tls.\n");
+    bzero(buf, sizeof(buf));
+    n = rustls_client_session_write_tls(session, (uint8_t *)buf, sizeof(buf));
+    if(n == 0) {
+      fprintf(stderr, "EOF from ClientSession::write_tls\n");
+      return CURLE_COULDNT_CONNECT;
+    }
+    else if(n < 0) {
+      fprintf(stderr, "Error in ClientSession::write_tls\n");
+      return CURLE_COULDNT_CONNECT;
+    }
+
+    rustls_result = write_all(sockfd, buf, n);
+    if(rustls_result != 0) {
+      fprintf(stderr, "Error in ClientSession::write_tls\n");
+      return CURLE_COULDNT_CONNECT;
+    }
   }
 
   if(rustls_client_session_wants_read(session)) {
@@ -140,11 +267,13 @@ Curl_rustls_connect_nonblocking(struct connectdata *conn, int sockindex,
       fprintf(stderr, "EOF reading from socket\n");
       return CURLE_COULDNT_CONNECT;
     }
-    else if(n == EAGAIN || n == EWOULDBLOCK) {
-      return CURLE_OK;
-    }
     else if(n < 0) {
+      if(SOCKERRNO == EAGAIN || SOCKERRNO == EWOULDBLOCK) {
+        fprintf(stderr, "again!\n");
+        return CURLE_OK;
+      }
       perror("reading from socket");
+      fprintf(stderr, "foo %d\n", n);
       return CURLE_COULDNT_CONNECT;
     }
     fprintf(stderr, "read %d bytes from socket\n", n);
@@ -172,29 +301,12 @@ Curl_rustls_connect_nonblocking(struct connectdata *conn, int sockindex,
     }
   }
 
-  if(rustls_client_session_wants_write(session)) {
-    fprintf(stderr, "ClientSession wants us to write_tls.\n");
-    bzero(buf, sizeof(buf));
-    n = rustls_client_session_write_tls(session, (uint8_t *)buf, sizeof(buf));
-    if(n == 0) {
-      fprintf(stderr, "EOF from ClientSession::write_tls\n");
-      return CURLE_COULDNT_CONNECT;
-    }
-    else if(n < 0) {
-      fprintf(stderr, "Error in ClientSession::write_tls\n");
-      return CURLE_COULDNT_CONNECT;
-    }
-
-    rustls_result = write_all(sockfd, buf, n);
-    if(rustls_result != 0) {
-      fprintf(stderr, "Error in ClientSession::write_tls\n");
-      return CURLE_COULDNT_CONNECT;
-    }
-  }
-
+  /* TODO: For some reason, on the very first call is_handshaking is already
+     returning false, even though in theory no I/O has been done. */
   /* Connection has been established according to rustls. Set send/recv
    handlers, and update the state machine. */
   if(!rustls_client_session_is_handshaking(session)) {
+    fprintf(stderr, "Done handshaking\n");
     /* Done with the handshake. Set up callbacks to send/receive data. */
     connssl->state = ssl_connection_complete;
     conn->recv[sockindex] = rustls_recv;
@@ -233,7 +345,7 @@ const struct Curl_ssl Curl_ssl_rustls = {
   0, /* supports */
   sizeof(struct ssl_backend_data),
 
-  Curl_none_init, /* init */
+  Curl_rustls_init, /* init */
   Curl_none_cleanup, /* cleanup */
   Curl_rustls_version, /* version */
   Curl_none_check_cxn, /* check_cxn */

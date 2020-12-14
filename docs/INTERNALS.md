@@ -986,8 +986,7 @@ for older and later versions as things don't change drastically that often.
 
   `->connect_it` allows a protocol to do some specific actions after the TCP
   connect is done, that can still be considered part of the connection phase.
-
-  Some protocols will alter the `connectdata->recv[]` and
+  Some protocols (e.g. SSL/TLS) will alter the `connectdata->recv[]` and
   `connectdata->send[]` function pointers in this function.
 
   `->connecting` is similarly a function that keeps getting called as long as
