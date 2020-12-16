@@ -63,7 +63,8 @@ Curl_rustls_data_pending(const struct connectdata *conn, int sockindex)
 }
 
 static CURLcode
-Curl_rustls_connect(struct connectdata *conn, int sockindex)
+Curl_rustls_connect(struct connectdata *conn UNUSED_PARAM,
+                    int sockindex UNUSED_PARAM)
 {
   fprintf(stderr, "rustls_connect: unimplemented\n");
   return CURLE_COULDNT_CONNECT;
@@ -78,7 +79,7 @@ rustls_recv(struct connectdata *conn, int sockindex, char *plainbuf,
   struct rustls_client_session *const session = backend->session;
   curl_socket_t sockfd = conn->sock[sockindex];
   uint8_t tlsbuf[4096];
-  int n = 0;
+  ssize_t n = 0;
   int rustls_result = 0;
 
   fprintf(stderr, "rustls_recv\n");
@@ -87,15 +88,19 @@ rustls_recv(struct connectdata *conn, int sockindex, char *plainbuf,
   n = read(sockfd, tlsbuf, sizeof(tlsbuf));
   if(n == 0) {
     fprintf(stderr, "rustls_recv: EOF reading from socket\n");
-    return CURLE_READ_ERROR;
+    *err = CURLE_READ_ERROR;
+    return -1;
   }
   else if(n < 0) {
     if(SOCKERRNO == EAGAIN || SOCKERRNO == EWOULDBLOCK) {
       fprintf(stderr, "rustls_recv: again!\n");
-      return CURLE_OK;
+      *err = CURLE_OK;
+      /* Curl specifies these should return 0 with CURLE_OK for "try later". */
+      return 0;
     }
     perror("reading from socket");
-    return CURLE_READ_ERROR;
+    *err = CURLE_READ_ERROR;
+    return -1;
   }
   fprintf(stderr, "rustls_recv: read %d bytes from socket\n", n);
 
@@ -108,27 +113,32 @@ rustls_recv(struct connectdata *conn, int sockindex, char *plainbuf,
   n = rustls_client_session_read_tls(session, (uint8_t *)tlsbuf, n);
   if(n == 0) {
     fprintf(stderr, "rustls_recv: EOF from ClientSession::read_tls\n");
-    return CURLE_READ_ERROR;
+    *err = CURLE_READ_ERROR;
+    return -1;
   }
   else if(n < 0) {
     fprintf(stderr, "rustls_recv: rror in ClientSession::read_tls\n");
-    return CURLE_READ_ERROR;
+    *err = CURLE_READ_ERROR;
+    return -1;
   }
 
   rustls_result = rustls_client_session_process_new_packets(session);
-  if(rustls_result != CRUSTLS_OK) {
+  if(rustls_result != RUSTLS_RESULT_OK) {
     fprintf(stderr, "Error in process_new_packets");
-    return CURLE_COULDNT_CONNECT;
+    *err = CURLE_COULDNT_CONNECT;
+    return -1;
   }
 
-  n = rustls_client_session_read(session, plainbuf, plainlen);
+  n = rustls_client_session_read(session, (uint8_t *)plainbuf, plainlen);
   if(n == 0) {
     fprintf(stderr, "rustls_recv: EOF from ClientSession::read\n");
-    return CURLE_READ_ERROR;
+    *err =  CURLE_READ_ERROR;
+    return -1;
   }
   else if(n < 0) {
     fprintf(stderr, "rustls_recv: error in ClientSession::read\n");
-    return CURLE_READ_ERROR;
+    *err = CURLE_READ_ERROR;
+    return -1;
   }
 
   return n;
@@ -139,11 +149,11 @@ rustls_recv(struct connectdata *conn, int sockindex, char *plainbuf,
  * we finish or hit an error. Assumes fd is blocking and therefore doesn't
  * handle EAGAIN. Returns 0 for success or 1 for error.
  */
-int
-write_all(int fd, const char *buf, int n)
+static int
+write_all(int fd, const uint8_t *buf, size_t n)
 {
+  ssize_t m = 0;
   fprintf(stderr, "writing %d\n", n);
-  int m = 0;
   while(n > 0) {
     m = write(fd, buf, n);
     if(m < 0) {
@@ -154,7 +164,13 @@ write_all(int fd, const char *buf, int n)
       fprintf(stderr, "early EOF when writing to stdout\n");
       return 1;
     }
-    n -= m;
+    if((size_t)m <= n) {
+      n -= m;
+    }
+    else {
+      fprintf(stderr, "too many bytes from write; would overflow\n");
+      return 1;
+    }
   }
   return 0;
 }
@@ -167,9 +183,9 @@ rustls_send(struct connectdata *conn, int sockindex, const void *plainbuf,
   struct ssl_backend_data *const backend = connssl->backend;
   struct rustls_client_session *const session = backend->session;
   curl_socket_t sockfd = conn->sock[sockindex];
-  int n = 0;
-  int result = 0;
+  ssize_t n = 0;
   uint8_t tlsbuf[2048];
+  int result = 0;
 
   fprintf(stderr, "rustls_send of %d bytes\n", plainlen);
 
@@ -177,24 +193,24 @@ rustls_send(struct connectdata *conn, int sockindex, const void *plainbuf,
   if(n == 0) {
     fprintf(stderr, "rustls_send: EOF in write\n");
     *err = CURLE_WRITE_ERROR;
-    return;
+    return -1;
   }
   else if(n < 0) {
     fprintf(stderr, "rustls_send: error in write\n");
     *err = CURLE_WRITE_ERROR;
-    return;
+    return -1;
   }
 
   n = rustls_client_session_write_tls(session, tlsbuf, sizeof(tlsbuf));
   if(n == 0) {
     fprintf(stderr, "rustls_send: EOF in write_tls\n");
     *err = CURLE_WRITE_ERROR;
-    return;
+    return -1;
   }
   else if(n < 0) {
     fprintf(stderr, "rustls_send: error in write_tls\n");
     *err = CURLE_WRITE_ERROR;
-    return;
+    return -1;
   }
 
 
@@ -202,6 +218,7 @@ rustls_send(struct connectdata *conn, int sockindex, const void *plainbuf,
   if(result != 0) {
     fprintf(stderr, "rustls_send: error in write_all\n");
     *err = CURLE_WRITE_ERROR;
+    return -1;
   }
 
   fprintf(stderr, "rustls_send done: %d\n", n);
@@ -212,15 +229,13 @@ static CURLcode
 Curl_rustls_connect_nonblocking(struct connectdata *conn, int sockindex,
                                 bool *done)
 {
-  int n = 0;
-  int what = 0;
+  ssize_t n = 0;
   int rustls_result = 0;
   uint8_t buf[6000]; /* TODO: Make this smaller */
   struct ssl_connect_data *const connssl = &conn->ssl[sockindex];
   struct ssl_backend_data *const backend = connssl->backend;
   struct rustls_client_session *session = backend->session;
   curl_socket_t sockfd = conn->sock[sockindex];
-  struct Curl_easy *data = conn->data;
 
   if(ssl_connection_none == connssl->state) {
     rustls_client_session_new(client_config, conn->host.name, &session);
@@ -295,7 +310,7 @@ Curl_rustls_connect_nonblocking(struct connectdata *conn, int sockindex,
     }
 
     rustls_result = rustls_client_session_process_new_packets(session);
-    if(rustls_result != CRUSTLS_OK) {
+    if(rustls_result != RUSTLS_RESULT_OK) {
       fprintf(stderr, "Error in process_new_packets");
       return CURLE_COULDNT_CONNECT;
     }
@@ -329,7 +344,8 @@ Curl_rustls_get_internals(struct ssl_connect_data *connssl,
 }
 
 static void
-Curl_rustls_close(struct connectdata *conn, int sockindex)
+Curl_rustls_close(struct connectdata *conn UNUSED_PARAM,
+                  int sockindex UNUSED_PARAM)
 {
   /* TODO */
 }
