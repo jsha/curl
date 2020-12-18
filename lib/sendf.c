@@ -656,6 +656,9 @@ CURLcode Curl_read_plain(curl_socket_t sockfd,
  * sockets, SSL sockets and kerberos sockets.
  *
  * Returns a regular CURLcode value.
+ *
+ * If the return value is CURLE_OK, buf and n were written to, and buf contains
+ * n bytes of data.
  */
 CURLcode Curl_read(struct connectdata *conn, /* connection data */
                    curl_socket_t sockfd,     /* read from this socket */

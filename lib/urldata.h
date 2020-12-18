@@ -104,14 +104,19 @@
 #include "splay.h"
 #include "dynbuf.h"
 
-/* return the count of bytes sent, or -1 on error */
+/* Returns the count of bytes sent, or -1 on error */
 typedef ssize_t (Curl_send)(struct connectdata *conn, /* connection data */
                             int sockindex,            /* socketindex */
                             const void *buf,          /* data to write */
                             size_t len,               /* max amount to write */
                             CURLcode *err);           /* error to return */
 
-/* return the count of bytes read, or -1 on error */
+/*
+ * Return the count of bytes read, or -1 on error. If returning -1,
+ * *err must be set to the error code. Returning 0 indicates end of file.
+ * If no bytes could be read, but this is also not yet the end of the stream,
+ * return -1 and set *err to CURLE_AGAIN.
+ */
 typedef ssize_t (Curl_recv)(struct connectdata *conn, /* connection data */
                             int sockindex,            /* socketindex */
                             char *buf,                /* store data here */

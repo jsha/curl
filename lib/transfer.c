@@ -549,8 +549,13 @@ bool Curl_meets_timecondition(struct Curl_easy *data, time_t timeofdoc)
  * the stream was rewound (in which case we have data in a
  * buffer)
  *
- * return '*comeback' TRUE if we didn't properly drain the socket so this
- * function should get called again without select() or similar in between!
+ * If the whole transfer is done, this function sets *done = TRUE and returns
+ * CURLE_OK. Otherwise it sets *done = FALSE.
+ *
+ * If we were not able to read all pending data from the connection, this
+ * function sets *comeback = TRUE. This signals to the caller that
+ * Curl_readwrite should be called again without a select() in between.
+ * Otherwise, it sets *comeback = FALSE.
  */
 static CURLcode readwrite_data(struct Curl_easy *data,
                                struct connectdata *conn,
@@ -561,7 +566,7 @@ static CURLcode readwrite_data(struct Curl_easy *data,
   CURLcode result = CURLE_OK;
   ssize_t nread; /* number of bytes read */
   size_t excess = 0; /* excess bytes read */
-  bool readmore = FALSE; /* used by RTP to signal for more data */
+  bool readmore = FALSE; /* used by RTP to signal for more data. lib/rtsp.c */
   int maxloops = 100;
   char *buf = data->state.buffer;
   DEBUGASSERT(buf);
@@ -646,6 +651,8 @@ static CURLcode readwrite_data(struct Curl_easy *data,
        in the flow below before the actual storing is done. */
     k->str = buf;
 
+    /* If the protocol specifies a "readwrite" function (currently only RTSP
+       does), call it now. */
     if(conn->handler->readwrite) {
       result = conn->handler->readwrite(data, conn, &nread, &readmore);
       if(result)
@@ -1202,8 +1209,13 @@ static CURLcode readwrite_upload(struct Curl_easy *data,
  * Curl_readwrite() is the low-level function to be called when data is to
  * be read and written to/from the connection.
  *
- * return '*comeback' TRUE if we didn't properly drain the socket so this
- * function should get called again without select() or similar in between!
+ * If the whole transfer is done, this function sets *done = TRUE and returns
+ * CURLE_OK. Otherwise it sets *done = FALSE.
+ *
+ * If we were not able to read all pending data from the connection, this
+ * function sets *comeback = TRUE. This signals to the caller that
+ * Curl_readwrite should be called again without a select() in between.
+ * Otherwise, it sets *comeback = FALSE.
  */
 CURLcode Curl_readwrite(struct connectdata *conn,
                         struct Curl_easy *data,
