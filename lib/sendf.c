@@ -305,9 +305,11 @@ CURLcode Curl_write(struct connectdata *conn,
   bytes_written = conn->send[num](conn, num, mem, len, &result);
 
   *written = bytes_written;
-  if(bytes_written >= 0)
+  if(bytes_written >= 0) {
+    DEBUGASSERT((size_t)bytes_written <= len);
     /* we completely ignore the curlcode value when subzero is not returned */
     return CURLE_OK;
+  }
 
   /* handle CURLE_AGAIN or a send failure */
   switch(result) {
