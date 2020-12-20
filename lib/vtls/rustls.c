@@ -210,47 +210,49 @@ rustls_send(struct connectdata *conn, int sockindex, const void *plainbuf,
   struct ssl_backend_data *const backend = connssl->backend;
   struct rustls_client_session *const session = backend->session;
   curl_socket_t sockfd = conn->sock[sockindex];
-  ssize_t n = 0;
+  ssize_t plainwritten = 0;
+  ssize_t tlswritten = 0;
   uint8_t tlsbuf[2048];
   int result = 0;
 
   infof(data, "rustls_send of %d bytes\n", plainlen);
 
-  n = rustls_client_session_write(session, plainbuf, plainlen);
-  if(n == 0) {
+  plainwritten = rustls_client_session_write(session, plainbuf, plainlen);
+  if(plainwritten == 0) {
     failf(data, "rustls_send: EOF in write");
     *err = CURLE_WRITE_ERROR;
     return -1;
   }
-  else if(n < 0) {
+  else if(plainwritten < 0) {
     failf(data, "rustls_send: error in write");
     *err = CURLE_WRITE_ERROR;
     return -1;
   }
 
-  n = rustls_client_session_write_tls(session, tlsbuf, sizeof(tlsbuf));
-  if(n == 0) {
+  tlswritten = rustls_client_session_write_tls(
+      session, tlsbuf, sizeof(tlsbuf));
+  if(tlswritten == 0) {
     failf(data, "rustls_send: EOF in write_tls");
     *err = CURLE_WRITE_ERROR;
     return -1;
   }
-  else if(n < 0) {
+  else if(tlswritten < 0) {
     failf(data, "rustls_send: error in write_tls");
     *err = CURLE_WRITE_ERROR;
     return -1;
   }
 
 
-  infof(data, "rustls_send: writing %d\n", n);
-  result = write_all(sockfd, tlsbuf, n);
+  infof(data, "rustls_send: writing %d\n", tlswritten);
+  result = write_all(sockfd, tlsbuf, tlswritten);
   if(result != 0) {
     failf(data, "rustls_send: error in write_all");
     *err = CURLE_WRITE_ERROR;
     return -1;
   }
 
-  infof(data, "rustls_send done: %d\n", n);
-  return n;
+  infof(data, "rustls_send done: %d\n", plainwritten);
+  return plainwritten;
 }
 
 static CURLcode
