@@ -72,6 +72,18 @@ Curl_rustls_connect(struct connectdata *conn,
   return CURLE_COULDNT_CONNECT;
 }
 
+/*
+ * On each run:
+ *  - Read a chunk of bytes from the socket into rustls' TLS input buffer.
+ *  - Tell rustls to process any new packets.
+ *  - Read out as many plaintext bytes from rustls as possible, until hitting
+ *    error, EOF, or EAGAIN/EWOULDBLOCK, or plainbuf/plainlen is filled up.
+ *
+ * It's okay to call this function with plainbuf == NULL and plainlen == 0.
+ * In that case, it will copy bytes from the socket into rustls' TLS input
+ * buffer, and process packets, but won't consume bytes from rustls' plaintext
+ * output buffer.
+ */
 static ssize_t
 rustls_recv(struct connectdata *conn, int sockindex, char *plainbuf,
             size_t plainlen, CURLcode *err)
@@ -88,8 +100,8 @@ rustls_recv(struct connectdata *conn, int sockindex, char *plainbuf,
   ssize_t plain_bytes_copied = 0;
   int rustls_result = 0;
 
-  bzero(tlsbuf, sizeof(tlsbuf));
-  tls_bytes_read = read(sockfd, tlsbuf, sizeof(tlsbuf));
+  memset(tlsbuf, 0, sizeof(tlsbuf));
+  tls_bytes_read = sread(sockfd, tlsbuf, sizeof(tlsbuf));
   if(tls_bytes_read == 0) {
     failf(data, "rustls_recv: EOF reading from socket");
     *err = CURLE_READ_ERROR;
@@ -170,30 +182,15 @@ rustls_recv(struct connectdata *conn, int sockindex, char *plainbuf,
 }
 
 /*
- * Write n bytes from buf to the provided fd, retrying short writes until
- * we finish or hit an error. Assumes fd is blocking and therefore doesn't
- * handle EAGAIN. Returns 0 for success or 1 for error.
+ * On each call:
+ *  - Copy `plainlen` bytes into rustls' plaintext input buffer (if > 0).
+ *  - Fully drain rustls' plaintext output buffer into the socket until
+ *    we get either an error or EAGAIN/EWOULDBLOCK.
+ *
+ * It's okay to call this function with plainbuf == NULL and plainlen == 0.
+ * In that case, it won't read anything into rustls' plaintext input buffer.
+ * It will only drain rustls' plaintext output buffer into the socket.
  */
-static int
-write_all(int fd, const uint8_t *buf, size_t len)
-{
-  size_t bytes_written = 0;
-  ssize_t n = 0;
-  while(bytes_written < len) {
-    n = write(fd, buf + bytes_written, len - bytes_written);
-    if(n < 0) {
-      perror("writing to socket");
-      return 1;
-    }
-    if(n == 0) {
-      return 1;
-    }
-    bytes_written += n;
-  }
-  DEBUGASSERT(bytes_written == len);
-  return 0;
-}
-
 static ssize_t
 rustls_send(struct connectdata *conn, int sockindex, const void *plainbuf,
             size_t plainlen, CURLcode *err)
@@ -203,45 +200,72 @@ rustls_send(struct connectdata *conn, int sockindex, const void *plainbuf,
   struct ssl_backend_data *const backend = connssl->backend;
   struct rustls_client_session *const session = backend->session;
   curl_socket_t sockfd = conn->sock[sockindex];
-  ssize_t plainwritten = 0;
-  ssize_t tlswritten = 0;
+  ssize_t n = 0;
+  size_t plainwritten = 0;
+  size_t tlslen = 0;
+  size_t tlswritten = 0;
   uint8_t tlsbuf[2048];
-  int result = 0;
 
   infof(data, "rustls_send of %d bytes\n", plainlen);
 
-  plainwritten = rustls_client_session_write(session, plainbuf, plainlen);
-  if(plainwritten == 0) {
-    failf(data, "rustls_send: EOF in write");
-    *err = CURLE_WRITE_ERROR;
-    return -1;
-  }
-  else if(plainwritten < 0) {
-    failf(data, "rustls_send: error in write");
-    *err = CURLE_WRITE_ERROR;
-    return -1;
+  if(plainlen > 0) {
+    n = rustls_client_session_write(session, plainbuf, plainlen);
+    if(n == 0) {
+      failf(data, "rustls_send: EOF in write");
+      *err = CURLE_WRITE_ERROR;
+      return -1;
+    }
+    else if(n < 0) {
+      failf(data, "rustls_send: error in write");
+      *err = CURLE_WRITE_ERROR;
+      return -1;
+    }
+
+    DEBUGASSERT(n > 0);
+    plainwritten = n;
   }
 
-  tlswritten = rustls_client_session_write_tls(
-      session, tlsbuf, sizeof(tlsbuf));
-  if(tlswritten == 0) {
-    failf(data, "rustls_send: EOF in write_tls");
-    *err = CURLE_WRITE_ERROR;
-    return -1;
-  }
-  else if(tlswritten < 0) {
-    failf(data, "rustls_send: error in write_tls");
-    *err = CURLE_WRITE_ERROR;
-    return -1;
-  }
+  while(rustls_client_session_wants_write(session)) {
+    n = rustls_client_session_write_tls(
+        session, tlsbuf, sizeof(tlsbuf));
+    if(n == 0) {
+      failf(data, "rustls_send: EOF in write_tls");
+      *err = CURLE_WRITE_ERROR;
+      return -1;
+    }
+    else if(n < 0) {
+      failf(data, "rustls_send: error in write_tls");
+      *err = CURLE_WRITE_ERROR;
+      return -1;
+    }
 
+    DEBUGASSERT(n > 0);
+    tlslen = n;
+    tlswritten = 0;
 
-  infof(data, "rustls_send: writing %d\n", tlswritten);
-  result = write_all(sockfd, tlsbuf, tlswritten);
-  if(result != 0) {
-    failf(data, "rustls_send: error in write_all");
-    *err = CURLE_WRITE_ERROR;
-    return -1;
+    while(tlswritten < tlslen) {
+      n = swrite(sockfd, tlsbuf + tlswritten, tlslen - tlswritten);
+      if(n < 0) {
+        if(SOCKERRNO == EAGAIN || SOCKERRNO == EWOULDBLOCK) {
+          /* Since recv is called from poll, there should be room to
+            write at least some bytes before hitting EAGAIN. */
+          infof(data, "rustls_send: EAGAIN after %ld bytes\n", tlswritten);
+          DEBUGASSERT(tlswritten > 0);
+          break;
+        }
+        perror("writing to socket");
+        *err = CURLE_WRITE_ERROR;
+        return 1;
+      }
+      if(n == 0) {
+        failf(data, "rustls_send: EOF in swrite");
+        *err = CURLE_WRITE_ERROR;
+        return 1;
+      }
+      tlswritten += n;
+    }
+
+    DEBUGASSERT(tlswritten <= tlslen);
   }
 
   infof(data, "rustls_send done: %d\n", plainwritten);
@@ -253,13 +277,10 @@ Curl_rustls_connect_nonblocking(struct connectdata *conn, int sockindex,
                                 bool *done)
 {
   struct Curl_easy *data = conn->data;
-  ssize_t n = 0;
-  int rustls_result = 0;
-  uint8_t buf[6000];
   struct ssl_connect_data *const connssl = &conn->ssl[sockindex];
   struct ssl_backend_data *const backend = connssl->backend;
   struct rustls_client_session *session = backend->session;
-  curl_socket_t sockfd = conn->sock[sockindex];
+  CURLcode tmperr = CURLE_OK;
 
   if(ssl_connection_none == connssl->state) {
     rustls_client_session_new(client_config, conn->host.name, &session);
@@ -277,20 +298,11 @@ Curl_rustls_connect_nonblocking(struct connectdata *conn, int sockindex,
 
   if(rustls_client_session_wants_write(session)) {
     infof(data, "ClientSession wants us to write_tls.\n");
-    bzero(buf, sizeof(buf));
-    n = rustls_client_session_write_tls(session, (uint8_t *)buf, sizeof(buf));
-    if(n == 0) {
-      infof(data, "EOF from ClientSession::write_tls\n");
-      return CURLE_COULDNT_CONNECT;
+    rustls_send(conn, sockindex, NULL, 0, &tmperr);
+    if(tmperr == CURLE_AGAIN) {
+      /* fall through */
     }
-    else if(n < 0) {
-      infof(data, "Error in ClientSession::write_tls\n");
-      return CURLE_COULDNT_CONNECT;
-    }
-
-    rustls_result = write_all(sockfd, buf, n);
-    if(rustls_result != 0) {
-      infof(data, "Error in ClientSession::write_tls\n");
+    else if(tmperr != CURLE_OK) {
       return CURLE_COULDNT_CONNECT;
     }
   }
@@ -298,40 +310,11 @@ Curl_rustls_connect_nonblocking(struct connectdata *conn, int sockindex,
   if(rustls_client_session_wants_read(session)) {
     infof(data, "ClientSession wants us to read_tls.\n");
 
-    bzero(buf, sizeof(buf));
-    n = read(sockfd, buf, sizeof(buf));
-    if(n == 0) {
-      infof(data, "EOF reading from socket\n");
-      return CURLE_COULDNT_CONNECT;
+    rustls_recv(conn, sockindex, NULL, 0, &tmperr);
+    if(tmperr == CURLE_AGAIN) {
+      /* fall through */
     }
-    else if(n < 0) {
-      if(SOCKERRNO == EAGAIN || SOCKERRNO == EWOULDBLOCK) {
-        return CURLE_OK;
-      }
-      perror("reading from socket");
-      return CURLE_COULDNT_CONNECT;
-    }
-    infof(data, "read %d bytes from socket\n", n);
-
-    /*
-     * Now pull those bytes from the buffer into ClientSession.
-     * Note that we pass buf, n; not buf, sizeof(buf). We don't
-     * want to pull in unitialized memory that we didn't just
-     * read from the socket.
-     */
-    n = rustls_client_session_read_tls(session, (uint8_t *)buf, n);
-    if(n == 0) {
-      infof(data, "EOF from ClientSession::read_tls\n");
-      return CURLE_COULDNT_CONNECT;
-    }
-    else if(n < 0) {
-      infof(data, "Error in ClientSession::read_tls\n");
-      return CURLE_COULDNT_CONNECT;
-    }
-
-    rustls_result = rustls_client_session_process_new_packets(session);
-    if(rustls_result != RUSTLS_RESULT_OK) {
-      infof(data, "Error in process_new_packets");
+    else if(tmperr != CURLE_OK) {
       return CURLE_COULDNT_CONNECT;
     }
   }
