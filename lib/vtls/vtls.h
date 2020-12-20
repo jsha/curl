@@ -42,53 +42,38 @@ struct Curl_ssl {
   unsigned int supports; /* bitfield, see above */
   size_t sizeof_ssl_backend_data;
 
-  /* Optional. Return 1 for success or 0 for error. */
   int (*init)(void);
-  /* Optional. */
   void (*cleanup)(void);
 
   size_t (*version)(char *buffer, size_t size);
-  /* Optional */
   int (*check_cxn)(struct connectdata *cxn);
   int (*shut_down)(struct connectdata *conn, int sockindex);
-  /* TODO: Rename connindex to sockindex here and in all implementations? */
   bool (*data_pending)(const struct connectdata *conn,
                        int connindex);
 
   /* return 0 if a find random is filled in */
   CURLcode (*random)(struct Curl_easy *data, unsigned char *entropy,
                      size_t length);
-  /* Optional */
   bool (*cert_status_request)(void);
 
-  /* Optional. Only used by FTP. */
   CURLcode (*connect_blocking)(struct connectdata *conn, int sockindex);
-  /* This is used like the `connecting` field of Curl_handler in urldata.h.
-     Once the handshake is done, this function should (a) set appropriate
-     handlers in conn->recv[sockindex] and conn->send[sockindex], and (b)
-     set *done to TRUE. */
   CURLcode (*connect_nonblocking)(struct connectdata *conn, int sockindex,
                                   bool *done);
   void *(*get_internals)(struct ssl_connect_data *connssl, CURLINFO info);
   void (*close_one)(struct connectdata *conn, int sockindex);
-  /* Optional */
   void (*close_all)(struct Curl_easy *data);
   void (*session_free)(void *ptr);
 
-  /* Optional */
   CURLcode (*set_engine)(struct Curl_easy *data, const char *engine);
-  /* Optional */
   CURLcode (*set_engine_default)(struct Curl_easy *data);
   struct curl_slist *(*engines_list)(struct Curl_easy *data);
 
-  /* Optional */
   bool (*false_start)(void);
 
-  /* Optional */
   CURLcode (*md5sum)(unsigned char *input, size_t inputlen,
                      unsigned char *md5sum, size_t md5sumlen);
   CURLcode (*sha256sum)(const unsigned char *input, size_t inputlen,
-                        unsigned char *sha256sum, size_t sha256sumlen);
+                    unsigned char *sha256sum, size_t sha256sumlen);
 };
 
 #ifdef USE_SSL

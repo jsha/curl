@@ -104,19 +104,14 @@
 #include "splay.h"
 #include "dynbuf.h"
 
-/* Returns the count of bytes sent, or -1 on error */
+/* return the count of bytes sent, or -1 on error */
 typedef ssize_t (Curl_send)(struct connectdata *conn, /* connection data */
                             int sockindex,            /* socketindex */
                             const void *buf,          /* data to write */
                             size_t len,               /* max amount to write */
                             CURLcode *err);           /* error to return */
 
-/*
- * Return the count of bytes read, or -1 on error. If returning -1,
- * *err must be set to the error code. Returning 0 indicates end of file.
- * If no bytes could be read, but this is also not yet the end of the stream,
- * return -1 and set *err to CURLE_AGAIN.
- */
+/* return the count of bytes read, or -1 on error */
 typedef ssize_t (Curl_recv)(struct connectdata *conn, /* connection data */
                             int sockindex,            /* socketindex */
                             char *buf,                /* store data here */
@@ -198,19 +193,8 @@ enum protection_level {
 };
 #endif
 
-/* enum for the nonblocking SSL connection state machine.
- * This enum is driven forward by calling the connect_nonblocking
- * function from the current SSL backend's Curl_ssl struct (vtls/vtls.h).
- * Note that these states are an internal implementation detail for SSL
- * backends, and any given backend can use them to mean anything it likes,
- * or not use them at all. The interfaces curl cares about are (a) the backend
- * should set the `*done` field in connect_nonblocking when it's done
- * handshaking, and (b) the backend should set conn->ssl[sockindex]->state to
- * ssl_connection_complete when it's done handshaking.
- */
+/* enum for the nonblocking SSL connection state machine */
 typedef enum {
-  /* Do backend-internal setup for this connection. No I/O. Valid transitions:
-     ssl_connect_1 (on error); ssl_connect_2. */
   ssl_connect_1,
   ssl_connect_2,
   ssl_connect_2_reading,
@@ -219,8 +203,6 @@ typedef enum {
   ssl_connect_done
 } ssl_connect_state;
 
-/* Higher-level state of the SSL connection. Like ssl_connect_state, this is
-   used entirely internal to the SSL backend. */
 typedef enum {
   ssl_connection_none,
   ssl_connection_negotiating,
@@ -710,8 +692,6 @@ struct SingleRequest {
 
 /*
  * Specific protocol handler.
- *
- * See docs/INTERNALS.md for details on how this struct is used.
  */
 
 struct Curl_handler {
@@ -731,10 +711,10 @@ struct Curl_handler {
   Curl_do_more_func do_more;
 
   /* This function *MAY* be set to a protocol-dependent function that is run
-   * after Curl_connect() and everything is done, as a step in the connection.
+   * after the connect() and everything is done, as a step in the connection.
    * The 'done' pointer points to a bool that should be set to TRUE if the
    * function completes before return. If it doesn't complete, the caller
-   * should call the connecting() function until it is.
+   * should call the curl_connecting() function until it is.
    */
   CURLcode (*connect_it)(struct connectdata *, bool *done);
 
