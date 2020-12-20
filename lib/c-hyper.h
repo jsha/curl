@@ -1,5 +1,5 @@
-#ifndef HEADER_CURL_GOPHER_H
-#define HEADER_CURL_GOPHER_H
+#ifndef HEADER_CURL_HYPER_H
+#define HEADER_CURL_HYPER_H
 /***************************************************************************
  *                                  _   _ ____  _
  *  Project                     ___| | | |  _ \| |
@@ -11,7 +11,7 @@
  *
  * This software is licensed as described in the file COPYING, which
  * you should have received as part of this distribution. The terms
- * are also available at https://curl.se/docs/copyright.html.
+ * are also available at https://curl.haxx.se/docs/copyright.html.
  *
  * You may opt to use, copy, modify, merge, publish, distribute and/or sell
  * copies of the Software, and permit persons to whom the Software is
@@ -21,12 +21,26 @@
  * KIND, either express or implied.
  *
  ***************************************************************************/
+#include "curl_setup.h"
 
-#ifndef CURL_DISABLE_GOPHER
-extern const struct Curl_handler Curl_handler_gopher;
-#ifdef USE_SSL
-extern const struct Curl_handler Curl_handler_gophers;
-#endif
-#endif
+#if !defined(CURL_DISABLE_HTTP) && defined(USE_HYPER)
 
-#endif /* HEADER_CURL_GOPHER_H */
+#include <hyper.h>
+
+/* per-transfer data for the Hyper backend */
+struct hyptransfer {
+  hyper_waker *write_waker;
+  hyper_waker *read_waker;
+  const hyper_executor *exec;
+  bool init;
+};
+
+CURLcode Curl_hyper_header(struct Curl_easy *data, hyper_headers *headers,
+                           const char *line);
+void Curl_hyper_done(struct Curl_easy *);
+
+#else
+#define Curl_hyper_done(x)
+
+#endif /* !defined(CURL_DISABLE_HTTP) && defined(USE_HYPER) */
+#endif /* HEADER_CURL_HYPER_H */

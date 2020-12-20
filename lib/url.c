@@ -251,6 +251,9 @@ static const struct Curl_handler * const protocols[] = {
 
 #ifndef CURL_DISABLE_GOPHER
   &Curl_handler_gopher,
+#ifdef USE_SSL
+  &Curl_handler_gophers,
+#endif
 #endif
 
 #ifdef USE_LIBRTMP
@@ -497,6 +500,7 @@ CURLcode Curl_init_userdefined(struct Curl_easy *data)
   set->ftp_use_eprt = TRUE;   /* FTP defaults to EPRT operations */
   set->ftp_use_pret = FALSE;  /* mainly useful for drftpd servers */
   set->ftp_filemethod = FTPFILE_MULTICWD;
+  set->ftp_skip_ip = TRUE;    /* skip PASV IP by default */
 #endif
   set->dns_cache_timeout = 60; /* Timeout every 60 seconds by default */
 

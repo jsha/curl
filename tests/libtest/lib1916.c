@@ -1,5 +1,3 @@
-#ifndef HEADER_CURL_GOPHER_H
-#define HEADER_CURL_GOPHER_H
 /***************************************************************************
  *                                  _   _ ____  _
  *  Project                     ___| | | |  _ \| |
@@ -7,7 +5,7 @@
  *                            | (__| |_| |  _ <| |___
  *                             \___|\___/|_| \_\_____|
  *
- * Copyright (C) 1998 - 2020, Daniel Stenberg, <daniel@haxx.se>, et al.
+ * Copyright (C) 2020, Daniel Stenberg, <daniel@haxx.se>, et al.
  *
  * This software is licensed as described in the file COPYING, which
  * you should have received as part of this distribution. The terms
@@ -21,12 +19,36 @@
  * KIND, either express or implied.
  *
  ***************************************************************************/
+#include "test.h"
 
-#ifndef CURL_DISABLE_GOPHER
-extern const struct Curl_handler Curl_handler_gopher;
-#ifdef USE_SSL
-extern const struct Curl_handler Curl_handler_gophers;
-#endif
-#endif
+#include "warnless.h"
+#include "memdebug.h"
 
-#endif /* HEADER_CURL_GOPHER_H */
+int test(char *URL)
+{
+  CURL *curl;
+  CURLcode res = CURLE_OK;
+
+  if(curl_global_init(CURL_GLOBAL_ALL) != CURLE_OK) {
+    fprintf(stderr, "curl_global_init() failed\n");
+    return TEST_ERR_MAJOR_BAD;
+  }
+
+  curl = curl_easy_init();
+  if(curl) {
+    curl_easy_setopt(curl, CURLOPT_URL, URL);
+#ifdef LIB1917
+    /* without any postfields set! */
+    curl_easy_setopt(curl, CURLOPT_POST, 1L);
+#else
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, "");
+#endif
+    res = curl_easy_perform(curl);
+    if(res) {
+      printf("res: %d\n", res);
+    }
+    curl_easy_cleanup(curl);
+  }
+  curl_global_cleanup();
+  return (int)res;
+}
