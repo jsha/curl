@@ -253,7 +253,7 @@ rustls_send(struct connectdata *conn, int sockindex, const void *plainbuf,
           DEBUGASSERT(tlswritten > 0);
           break;
         }
-        perror("writing to socket");
+        failf(data, "rustls_send: error in swrite");
         *err = CURLE_WRITE_ERROR;
         return 1;
       }
