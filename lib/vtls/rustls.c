@@ -47,12 +47,6 @@ Curl_rustls_init(void)
   return 1;
 }
 
-static size_t
-Curl_rustls_version(char *buffer, size_t size)
-{
-  return msnprintf(buffer, size, "rustls");
-}
-
 static bool
 Curl_rustls_data_pending(const struct connectdata *conn, int sockindex)
 {
@@ -369,7 +363,7 @@ const struct Curl_ssl Curl_ssl_rustls = {
 
   Curl_rustls_init,                /* init */
   Curl_none_cleanup,               /* cleanup */
-  Curl_rustls_version,             /* version */
+  rustls_version,                  /* version */
   Curl_none_check_cxn,             /* check_cxn */
   Curl_none_shutdown,              /* shutdown */
   Curl_rustls_data_pending,        /* data_pending */
