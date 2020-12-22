@@ -87,7 +87,9 @@ rustls_recv(struct connectdata *conn, int sockindex, char *plainbuf,
   struct ssl_backend_data *const backend = connssl->backend;
   struct rustls_client_session *const session = backend->session;
   curl_socket_t sockfd = conn->sock[sockindex];
-  uint8_t tlsbuf[16384];
+  // Per https://www.bearssl.org/api1.html, max TLS record size plus max
+  // per-record overhead.
+  uint8_t tlsbuf[16384 + 325];
   ssize_t n = 0;
   ssize_t tls_bytes_read = 0;
   ssize_t tls_bytes_processed = 0;
@@ -198,7 +200,9 @@ rustls_send(struct connectdata *conn, int sockindex, const void *plainbuf,
   size_t plainwritten = 0;
   size_t tlslen = 0;
   size_t tlswritten = 0;
-  uint8_t tlsbuf[2048];
+  // The output buffer is the size of the plaintext input, plus some space
+  // for TLS framing overhead.
+  uint8_t tlsbuf[plainlen+2048];
 
   infof(data, "rustls_send of %d bytes\n", plainlen);
 
