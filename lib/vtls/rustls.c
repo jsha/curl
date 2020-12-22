@@ -96,7 +96,6 @@ rustls_recv(struct connectdata *conn, int sockindex, char *plainbuf,
   ssize_t plain_bytes_copied = 0;
   int rustls_result = 0;
 
-  memset(tlsbuf, 0, sizeof(tlsbuf));
   tls_bytes_read = sread(sockfd, tlsbuf, sizeof(tlsbuf));
   if(tls_bytes_read == 0) {
     failf(data, "rustls_recv: EOF reading from socket");
