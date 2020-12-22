@@ -107,7 +107,7 @@ rustls_recv(struct connectdata *conn, int sockindex, char *plainbuf,
     if(SOCKERRNO == EAGAIN || SOCKERRNO == EWOULDBLOCK) {
       infof(data, "rustls_recv: EAGAIN or EWOULDBLOCK\n");
       *err = CURLE_AGAIN;
-      return 0;
+      return -1;
     }
     failf(data, "rustls_recv: reading from socket: %s", strerror(SOCKERRNO));
     *err = CURLE_READ_ERROR;
