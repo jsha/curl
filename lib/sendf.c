@@ -305,9 +305,11 @@ CURLcode Curl_write(struct connectdata *conn,
   bytes_written = conn->send[num](conn, num, mem, len, &result);
 
   *written = bytes_written;
-  if(bytes_written >= 0)
+  if(bytes_written >= 0) {
     /* we completely ignore the curlcode value when subzero is not returned */
+    DEBUGASSERT(result == CURLE_OK);
     return CURLE_OK;
+  }
 
   /* handle CURLE_AGAIN or a send failure */
   switch(result) {
@@ -682,6 +684,8 @@ CURLcode Curl_read(struct connectdata *conn, /* connection data */
   nread = conn->recv[num](conn, num, buffertofill, bytesfromsocket, &result);
   if(nread < 0)
     return result;
+  /* If there was no error, result should not have changed. */
+  DEBUGASSERT(result == CURLE_RECV_ERROR);
 
   *n += nread;
 
