@@ -34,16 +34,14 @@
 
 struct ssl_backend_data
 {
+  const struct rustls_client_config *config;
   struct rustls_client_session *session;
   bool data_pending;
 };
 
-static const struct rustls_client_config *client_config = NULL;
-
 static int
 Curl_rustls_init(void)
 {
-  client_config = rustls_client_config_new();
   return 1;
 }
 
@@ -276,10 +274,27 @@ Curl_rustls_connect_nonblocking(struct connectdata *conn, int sockindex,
   struct ssl_connect_data *const connssl = &conn->ssl[sockindex];
   struct ssl_backend_data *const backend = connssl->backend;
   struct rustls_client_session *session = backend->session;
+  struct rustls_client_config_builder *config_builder = NULL;
+  const struct rustls_client_config *client_config = NULL;
   CURLcode tmperr = CURLE_OK;
+  int result;
 
   if(ssl_connection_none == connssl->state) {
-    rustls_client_session_new(client_config, conn->host.name, &session);
+    config_builder = rustls_client_config_builder_new();
+    result = rustls_client_config_builder_load_native_roots(config_builder);
+    if(result != RUSTLS_RESULT_OK) {
+      failf(data, "failed to load trusted certificates");
+      return CURLE_COULDNT_CONNECT;
+    }
+
+    client_config = rustls_client_config_builder_build(config_builder);
+    DEBUGASSERT(session == NULL);
+    result = rustls_client_session_new(
+      client_config, conn->host.name, &session);
+    if(result != RUSTLS_RESULT_OK) {
+      failf(data, "failed to create client session");
+      return CURLE_COULDNT_CONNECT;
+    }
     backend->session = session;
     connssl->state = ssl_connection_negotiating;
   }
@@ -349,18 +364,22 @@ static void
 Curl_rustls_close(struct connectdata *conn UNUSED_PARAM,
                   int sockindex UNUSED_PARAM)
 {
-  /* TODO */
-}
+  struct ssl_connect_data *connssl = &conn->ssl[sockindex];
+  struct ssl_backend_data *backend = connssl->backend;
 
-static void
-Curl_rustls_session_free(void *ptr)
-{
-  rustls_client_session_free(ptr);
+  if(backend->session) {
+    rustls_client_session_free(backend->session);
+    backend->session = NULL;
+  }
+  if(backend->config) {
+    rustls_client_config_free(backend->config);
+    backend->config = NULL;
+  }
 }
 
 const struct Curl_ssl Curl_ssl_rustls = {
   { CURLSSLBACKEND_RUSTLS, "rustls" },
-  0, /* supports */
+  SSLSUPP_CA_PATH | SSLSUPP_TLS13_CIPHERSUITES, /* supports */
   sizeof(struct ssl_backend_data),
 
   Curl_rustls_init,                /* init */
@@ -376,7 +395,7 @@ const struct Curl_ssl Curl_ssl_rustls = {
   Curl_rustls_get_internals,       /* get_internals */
   Curl_rustls_close,               /* close_one */
   Curl_none_close_all,             /* close_all */
-  Curl_rustls_session_free,        /* session_free */
+  Curl_none_session_free,        /* session_free */
   Curl_none_set_engine,            /* set_engine */
   Curl_none_set_engine_default,    /* set_engine_default */
   Curl_none_engines_list,          /* engines_list */
