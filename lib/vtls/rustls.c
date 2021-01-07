@@ -90,11 +90,11 @@ rustls_recv(struct connectdata *conn, int sockindex, char *plainbuf,
   /* Per https://www.bearssl.org/api1.html, max TLS record size plus max
      per-record overhead. */
   uint8_t tlsbuf[16384 + 325];
-  ssize_t n = 0;
+  size_t n = 0;
   ssize_t tls_bytes_read = 0;
-  ssize_t tls_bytes_processed = 0;
-  ssize_t plain_bytes_copied = 0;
-  int rustls_result = 0;
+  size_t tls_bytes_processed = 0;
+  size_t plain_bytes_copied = 0;
+  rustls_result rresult = 0;
 
   tls_bytes_read = sread(sockfd, tlsbuf, sizeof(tlsbuf));
   if(tls_bytes_read == 0) {
@@ -117,22 +117,24 @@ rustls_recv(struct connectdata *conn, int sockindex, char *plainbuf,
   /*
   * Now pull those bytes from the buffer into ClientSession.
   */
-  while(tls_bytes_processed < tls_bytes_read) {
-    n = rustls_client_session_read_tls(session,
+  DEBUGASSERT(tls_bytes_read > 0);
+  while(tls_bytes_processed < (size_t)tls_bytes_read) {
+    rresult = rustls_client_session_read_tls(session,
       (uint8_t *)tlsbuf + tls_bytes_processed,
-      tls_bytes_read - tls_bytes_processed);
-    if(n == 0) {
-      infof(data, "rustls_recv: EOF from rustls_client_session_read_tls\n");
-      break;
-    }
-    else if(n < 0) {
+      tls_bytes_read - tls_bytes_processed,
+      &n);
+    if(rresult != RUSTLS_RESULT_OK) {
       failf(data, "rustls_recv: error in rustls_client_session_read_tls");
       *err = CURLE_READ_ERROR;
       return -1;
     }
+    else if(n == 0) {
+      infof(data, "rustls_recv: EOF from rustls_client_session_read_tls\n");
+      break;
+    }
 
-    rustls_result = rustls_client_session_process_new_packets(session);
-    if(rustls_result != RUSTLS_RESULT_OK) {
+    rresult = rustls_client_session_process_new_packets(session);
+    if(rresult != RUSTLS_RESULT_OK) {
       failf(data, "rustls_recv: error in process_new_packets");
       *err = CURLE_READ_ERROR;
       return -1;
@@ -142,11 +144,17 @@ rustls_recv(struct connectdata *conn, int sockindex, char *plainbuf,
     backend->data_pending = TRUE;
   }
 
-  while((size_t)plain_bytes_copied < plainlen) {
-    n = rustls_client_session_read(session,
+  while(plain_bytes_copied < plainlen) {
+    rresult = rustls_client_session_read(session,
       (uint8_t *)plainbuf + plain_bytes_copied,
-      plainlen - plain_bytes_copied);
-    if(n == 0) {
+      plainlen - plain_bytes_copied,
+      &n);
+    if(rresult != RUSTLS_RESULT_OK) {
+      failf(data, "rustls_recv: error in rustls_client_session_read");
+      *err = CURLE_READ_ERROR;
+      return -1;
+    }
+    else if(n == 0) {
       /* rustls returns 0 from client_session_read to mean "all currently
         available data has been read." If we bring in more ciphertext with
         read_tls, more plaintext will become available. So don't tell curl
@@ -154,11 +162,6 @@ rustls_recv(struct connectdata *conn, int sockindex, char *plainbuf,
       infof(data, "rustls_recv: EOF from rustls_client_session_read\n");
       backend->data_pending = FALSE;
       break;
-    }
-    else if(n < 0) {
-      failf(data, "rustls_recv: error in rustls_client_session_read");
-      *err = CURLE_READ_ERROR;
-      return -1;
     }
     else {
       plain_bytes_copied += n;
@@ -201,42 +204,39 @@ rustls_send(struct connectdata *conn, int sockindex, const void *plainbuf,
   size_t tlswritten = 0;
   /* Max size of a TLS message, plus some space for TLS framing overhead. */
   uint8_t tlsbuf[16384 + 325];
+  rustls_result rresult;
 
   infof(data, "rustls_send of %d bytes\n", plainlen);
 
   if(plainlen > 0) {
-    n = rustls_client_session_write(session, plainbuf, plainlen);
-    if(n == 0) {
-      failf(data, "rustls_send: EOF in write");
-      *err = CURLE_WRITE_ERROR;
-      return -1;
-    }
-    else if(n < 0) {
+    rresult = rustls_client_session_write(session,
+        plainbuf, plainlen, &plainwritten);
+    if(rresult != RUSTLS_RESULT_OK) {
       failf(data, "rustls_send: error in write");
       *err = CURLE_WRITE_ERROR;
       return -1;
     }
-
-    DEBUGASSERT(n > 0);
-    plainwritten = n;
-  }
-
-  while(rustls_client_session_wants_write(session)) {
-    n = rustls_client_session_write_tls(
-        session, tlsbuf, sizeof(tlsbuf));
-    if(n == 0) {
-      failf(data, "rustls_send: EOF in write_tls");
+    else if(plainwritten == 0) {
+      failf(data, "rustls_send: EOF in write");
       *err = CURLE_WRITE_ERROR;
       return -1;
     }
-    else if(n < 0) {
+  }
+
+  while(rustls_client_session_wants_write(session)) {
+    rresult = rustls_client_session_write_tls(
+        session, tlsbuf, sizeof(tlsbuf), &tlslen);
+    if(rresult != RUSTLS_RESULT_OK) {
       failf(data, "rustls_send: error in write_tls");
       *err = CURLE_WRITE_ERROR;
       return -1;
     }
+    else if(tlslen == 0) {
+      failf(data, "rustls_send: EOF in write_tls");
+      *err = CURLE_WRITE_ERROR;
+      return -1;
+    }
 
-    DEBUGASSERT(n > 0);
-    tlslen = n;
     tlswritten = 0;
 
     while(tlswritten < tlslen) {
@@ -251,12 +251,12 @@ rustls_send(struct connectdata *conn, int sockindex, const void *plainbuf,
         }
         failf(data, "rustls_send: error in swrite");
         *err = CURLE_WRITE_ERROR;
-        return 1;
+        return -1;
       }
       if(n == 0) {
         failf(data, "rustls_send: EOF in swrite");
         *err = CURLE_WRITE_ERROR;
-        return 1;
+        return -1;
       }
       tlswritten += n;
     }
