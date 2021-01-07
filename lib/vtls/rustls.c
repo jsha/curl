@@ -39,10 +39,20 @@ struct ssl_backend_data
   bool data_pending;
 };
 
-static int
-Curl_rustls_init(void)
+/* For a given rustls_result error code, return the best-matching CURLcode. */
+static CURLcode map_error(rustls_result r)
 {
-  return 1;
+  if(rustls_result_is_cert_error(r)) {
+    return CURLE_PEER_FAILED_VERIFICATION;
+  }
+  switch(r) {
+    case RUSTLS_RESULT_OK:
+      return CURLE_OK;
+    case RUSTLS_RESULT_NULL_PARAMETER:
+      return CURLE_BAD_FUNCTION_ARGUMENT;
+    default:
+      return CURLE_READ_ERROR;
+  }
 }
 
 static bool
@@ -61,7 +71,7 @@ Curl_rustls_connect(struct connectdata *conn,
 {
   struct Curl_easy *data = conn->data;
   infof(data, "rustls_connect: unimplemented\n");
-  return CURLE_COULDNT_CONNECT;
+  return CURLE_SSL_CONNECT_ERROR;
 }
 
 /*
@@ -93,6 +103,7 @@ rustls_recv(struct connectdata *conn, int sockindex, char *plainbuf,
   size_t tls_bytes_processed = 0;
   size_t plain_bytes_copied = 0;
   rustls_result rresult = 0;
+  char errorbuf[255];
 
   tls_bytes_read = sread(sockfd, tlsbuf, sizeof(tlsbuf));
   if(tls_bytes_read == 0) {
@@ -133,8 +144,9 @@ rustls_recv(struct connectdata *conn, int sockindex, char *plainbuf,
 
     rresult = rustls_client_session_process_new_packets(session);
     if(rresult != RUSTLS_RESULT_OK) {
-      failf(data, "rustls_recv: error in process_new_packets");
-      *err = CURLE_READ_ERROR;
+      rustls_error(rresult, errorbuf, sizeof(errorbuf), &n);
+      failf(data, "%.*s", n, errorbuf);
+      *err = map_error(rresult);
       return -1;
     }
 
@@ -276,17 +288,27 @@ Curl_rustls_connect_nonblocking(struct connectdata *conn, int sockindex,
   struct rustls_client_session *session = backend->session;
   struct rustls_client_config_builder *config_builder = NULL;
   const struct rustls_client_config *client_config = NULL;
+  const char *const ssl_cafile = SSL_CONN_CONFIG(CAfile);
   CURLcode tmperr = CURLE_OK;
   int result;
 
   if(ssl_connection_none == connssl->state) {
     config_builder = rustls_client_config_builder_new();
-    result = rustls_client_config_builder_load_native_roots(config_builder);
-    if(result != RUSTLS_RESULT_OK) {
-      failf(data, "failed to load trusted certificates");
-      return CURLE_COULDNT_CONNECT;
+    if(ssl_cafile) {
+      result = rustls_client_config_builder_load_roots_from_file(
+        config_builder, ssl_cafile);
+      if(result != RUSTLS_RESULT_OK) {
+        failf(data, "failed to load trusted certificates");
+        return CURLE_SSL_CACERT_BADFILE;
+      }
     }
-
+    else {
+      result = rustls_client_config_builder_load_native_roots(config_builder);
+      if(result != RUSTLS_RESULT_OK) {
+        failf(data, "failed to load trusted certificates");
+        return CURLE_SSL_CACERT_BADFILE;
+      }
+    }
     client_config = rustls_client_config_builder_build(config_builder);
     DEBUGASSERT(session == NULL);
     result = rustls_client_session_new(
@@ -314,7 +336,7 @@ Curl_rustls_connect_nonblocking(struct connectdata *conn, int sockindex,
       /* fall through */
     }
     else if(tmperr != CURLE_OK) {
-      return CURLE_COULDNT_CONNECT;
+      return tmperr;
     }
   }
 
@@ -326,7 +348,12 @@ Curl_rustls_connect_nonblocking(struct connectdata *conn, int sockindex,
       /* fall through */
     }
     else if(tmperr != CURLE_OK) {
-      return CURLE_COULDNT_CONNECT;
+      if(tmperr == CURLE_READ_ERROR) {
+        return CURLE_SSL_CONNECT_ERROR;
+      }
+      else {
+        return tmperr;
+      }
     }
   }
 
@@ -379,10 +406,10 @@ Curl_rustls_close(struct connectdata *conn UNUSED_PARAM,
 
 const struct Curl_ssl Curl_ssl_rustls = {
   { CURLSSLBACKEND_RUSTLS, "rustls" },
-  SSLSUPP_CA_PATH | SSLSUPP_TLS13_CIPHERSUITES, /* supports */
+  SSLSUPP_TLS13_CIPHERSUITES,      /* supports */
   sizeof(struct ssl_backend_data),
 
-  Curl_rustls_init,                /* init */
+  Curl_none_init,                  /* init */
   Curl_none_cleanup,               /* cleanup */
   rustls_version,                  /* version */
   Curl_none_check_cxn,             /* check_cxn */
@@ -395,7 +422,7 @@ const struct Curl_ssl Curl_ssl_rustls = {
   Curl_rustls_get_internals,       /* get_internals */
   Curl_rustls_close,               /* close_one */
   Curl_none_close_all,             /* close_all */
-  Curl_none_session_free,        /* session_free */
+  Curl_none_session_free,          /* session_free */
   Curl_none_set_engine,            /* set_engine */
   Curl_none_set_engine_default,    /* set_engine_default */
   Curl_none_engines_list,          /* engines_list */
